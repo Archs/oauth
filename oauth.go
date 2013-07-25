@@ -62,6 +62,8 @@ const (
 	TOKEN_SECRET_PARAM     = "oauth_token_secret"
 	VERIFIER_PARAM         = "oauth_verifier"
 	VERSION_PARAM          = "oauth_version"
+	SESSION_HANDLE_PARAM   = "oauth_session_handle"
+	EXPIRES_IN_PARAM       = "oauth_expires_in"
 )
 
 // TODO(mrjones) Do we definitely want separate "Request" and "Access" token classes?
@@ -72,8 +74,10 @@ type RequestToken struct {
 }
 
 type AccessToken struct {
-	Token  string
-	Secret string
+	Token         string
+	Secret        string
+	ExpiresIn     string
+	SessionHandle string
 }
 
 type DataLocation int
@@ -206,7 +210,7 @@ func (c *Consumer) GetRequestTokenAndUrl(callbackUrl string) (rtoken *RequestTok
 		return nil, "", errors.New("getBody: " + err.Error())
 	}
 
-	token, secret, err := parseTokenAndSecret(*resp)
+	token, secret, _, _, err := parseTokenAndSecret(*resp)
 	if err != nil {
 		return nil, "", errors.New("parseTokenAndSecret: " + err.Error())
 	}
@@ -253,11 +257,37 @@ func (c *Consumer) AuthorizeToken(rtoken *RequestToken, verificationCode string)
 		return nil, err
 	}
 
-	token, secret, err := parseTokenAndSecret(*resp)
+	token, secret, sessionhandle, expire, err := parseTokenAndSecret(*resp)
 	if err != nil {
 		return nil, err
 	}
-	return &AccessToken{Token: token, Secret: secret}, nil
+	return &AccessToken{Token: token, Secret: secret, SessionHandle: sessionhandle, ExpiresIn: expire}, nil
+}
+
+func (c *Consumer) RefreshAccessToken(atoken *AccessToken) error {
+	params := c.baseParams(c.consumerKey, c.AdditionalParams)
+
+	params.Add(TOKEN_PARAM, atoken.Token)
+	params.Add(SESSION_HANDLE_PARAM, atoken.SessionHandle)
+
+	req := newGetRequest(c.serviceProvider.AccessTokenUrl, params)
+	c.signRequest(req, c.makeKey(atoken.Secret))
+
+	resp, err := c.getBody(c.serviceProvider.AccessTokenUrl, params)
+	if err != nil {
+		return err
+	}
+
+	token, secret, sessionhandle, expire, err := parseTokenAndSecret(*resp)
+	if err != nil {
+		return err
+	}
+	// return &AccessToken{Token: token, Secret: secret, SessionHandle: sessionhandle, ExpiresIn: expire}, nil
+	atoken.Token = token
+	atoken.Secret = secret
+	atoken.SessionHandle = sessionhandle
+	atoken.ExpiresIn = expire
+	return nil
 }
 
 // Executes an HTTP Get,, authorized via the AccessToken.
@@ -414,22 +444,32 @@ func (c *Consumer) makeKey(tokenSecret string) string {
 	return escape(c.consumerSecret) + "&" + escape(tokenSecret)
 }
 
-func parseTokenAndSecret(data string) (string, string, error) {
+func parseTokenAndSecret(data string) (string, string, string, string, error) {
 	parts, err := url.ParseQuery(data)
 	if err != nil {
-		return "", "", err
+		return "", "", "", "", err
 	}
 
 	if len(parts[TOKEN_PARAM]) < 1 {
-		return "", "", errors.New("Missing " + TOKEN_PARAM + " in response. " +
+		return "", "", "", "", errors.New("Missing " + TOKEN_PARAM + " in response. " +
 			"Full response body: '" + data + "'")
 	}
 	if len(parts[TOKEN_SECRET_PARAM]) < 1 {
-		return "", "", errors.New("Missing " + TOKEN_SECRET_PARAM + " in response." +
+		return "", "", "", "", errors.New("Missing " + TOKEN_SECRET_PARAM + " in response." +
 			"Full response body: '" + data + "'")
 	}
 
-	return parts[TOKEN_PARAM][0], parts[TOKEN_SECRET_PARAM][0], nil
+	sessionhandle := ""
+	if len(parts[SESSION_HANDLE_PARAM]) >= 1 {
+		sessionhandle = parts[SESSION_HANDLE_PARAM][0]
+	}
+
+	expire := ""
+	if len(parts[EXPIRES_IN_PARAM]) >= 1 {
+		expire = parts[EXPIRES_IN_PARAM][0]
+	}
+
+	return parts[TOKEN_PARAM][0], parts[TOKEN_SECRET_PARAM][0], sessionhandle, expire, nil
 }
 
 func (c *Consumer) baseParams(consumerKey string, additionalParams map[string]string) *OrderedParams {
