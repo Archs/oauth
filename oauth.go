@@ -68,6 +68,10 @@ const (
 	EXPIRES_IN_PARAM       = "oauth_expires_in"
 )
 
+var (
+	NullJsonRpcParam = []interface{}{struct{}{}}
+)
+
 // TODO(mrjones) Do we definitely want separate "Request" and "Access" token classes?
 // They're identical structurally, but used for different purposes.
 type RequestToken struct {
