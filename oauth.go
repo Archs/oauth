@@ -36,9 +36,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -663,4 +665,76 @@ func (o *OrderedParams) Clone() *OrderedParams {
 		clone.AddUnescaped(key, o.Get(key))
 	}
 	return clone
+}
+
+type JsonRpcClient struct {
+	Url        string
+	Method     string
+	httpMethod string
+	id         int // seq
+	c          *Consumer
+	atoken     *AccessToken
+}
+
+// Call(method string, id interface{}, params []interface{})
+
+func (c *Consumer) NewJsonRpcClient(url string, atoken *AccessToken) *JsonRpcClient {
+	j := new(JsonRpcClient)
+	j.c = c
+	j.id = 0
+	j.Url = url
+	j.httpMethod = "POST"
+	j.atoken = atoken
+	return j
+}
+
+func (c *Consumer) makeAuthorizedJsonRpcRequest(method string, url string, body string, token *AccessToken) (resp *http.Response, err error) {
+	allParams := c.baseParams(c.consumerKey, c.AdditionalParams)
+	allParams.Add(TOKEN_PARAM, token.Token)
+	authParams := allParams.Clone()
+
+	key := c.makeKey(token.Secret)
+
+	base_string := c.requestString(method, url, allParams)
+	authParams.Add(SIGNATURE_PARAM, c.signer.Sign(base_string, key))
+
+	contentType := "application/json"
+	return c.httpExecute(method, url, contentType, body, authParams)
+}
+
+func (j *JsonRpcClient) Call(method string, params []interface{}) (map[string]interface{}, error) {
+	data, err := json.Marshal(map[string]interface{}{
+		"method": method,
+		"id":     j.id,
+		"params": params,
+	})
+	if err != nil {
+		log.Fatalf("Marshal: %v", err)
+		return nil, err
+	}
+	resp, err := j.c.makeAuthorizedJsonRpcRequest(j.httpMethod, j.Url, string(data), j.atoken)
+
+	if err != nil {
+		log.Fatalf("Post: %v", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatalf("ReadAll: %v", err)
+		return nil, err
+	}
+	result := make(map[string]interface{})
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		log.Fatalf("Unmarshal: %v", err)
+		return nil, err
+	}
+	//log.Println(result)
+	return result, nil
+}
+
+func (j *JsonRpcClient) CallWithId(id int, method string, params []interface{}) (map[string]interface{}, error) {
+	j.id = id
+	return j.Call(method, params)
 }
